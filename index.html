@@ -93,12 +93,12 @@ function ensureAudio(){
   filterNode.connect(rev);rev.connect(wet);wet.connect(comp);
   comp.connect(ctx.destination);
 }
-const VOICINGS={'maj9':[0,4,7,11,14],'min9':[0,3,7,10,14],'dom9':[0,4,7,10,14],'69':[0,4,7,9,14],};
-const VOICING_LABELS={'maj9':'maj9','min9':'m9','dom9':'9','69':'6/9'};
+const VOICINGS={'maj':[0,4,7],'min':[0,3,7],'sus':[0,5,7],'5':[0,7],};
+const VOICING_LABELS={'maj':'maj','min':'min','sus':'sus','5':'5'};
 const KEYS=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const KEY_OFFSET={C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11};
 const DEGREE_OFFSETS=[0,2,4,5,7,9,11,12];
-const ROW_VOICINGS=['maj9','min9','dom9','69'];
+const ROW_VOICINGS=['maj','min','sus','5'];
 function chordFreqs(rootMidi,voicing){return VOICINGS[voicing].map(semi=>440*Math.pow(2,(rootMidi+semi-69)/12));}
 function chordNoteNames(rootMidi,voicing){return VOICINGS[voicing].map(semi=>KEYS[(rootMidi+semi)%12]);}
 let activeVoices=[];
