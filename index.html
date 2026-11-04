@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Prism Chords</title>
+<style>
+html,body{-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#060a12;color:#e6fbff;margin:0;padding:0;overflow:hidden;touch-action:none;}
+#app{display:flex;height:100dvh;}
+#gridWrap{flex:1;display:flex;flex-direction:column;padding:12px;min-width:0;}
+#topbar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
+h1{font-size:20px;margin:0;letter-spacing:2px;color:#7df9ff;text-shadow:0 0 12px rgba(0,240,255,.6);}
+select{background:#0e2233;color:#7df9ff;border:1px solid rgba(0,240,255,.4);border-radius:8px;padding:8px;font-size:14px;}
+#grid{flex:1;display:grid;gap:6px;min-height:0;}
+.cell{border-radius:10px;border:1px solid rgba(0,240,255,.25);background:rgba(8,20,32,.7);color:#9fd8e2;font-size:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;touch-action:none;transition:background .1s;}
+.cell .cn{font-size:15px;font-weight:700;color:#e6fbff;}
+.cell .ct{font-size:10px;opacity:.7;}
+.cell.active{background:rgba(0,240,255,.25);border-color:#00f0ff;box-shadow:0 0 18px rgba(0,240,255,.4);}
+.cell.active .cn{color:#fff;}
+#ribbon{width:64px;background:linear-gradient(to bottom,#0a1520,#06121c);border-left:1px solid rgba(0,240,255,.2);position:relative;touch-action:none;cursor:ns-resize;}
+#ribbonFill{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(to top,rgba(0,240,255,.35),rgba(0,240,255,.05));pointer-events:none;}
+#ribbonLabel{position:absolute;top:8px;left:0;right:0;text-align:center;font-size:10px;color:#9fd8e2;letter-spacing:1px;pointer-events:none;}
+#hint{text-align:center;font-size:12px;color:#9fd8e2;opacity:.7;padding:8px;}
+</style>
+</head>
+<body>
+<div id="app">
+<div id="gridWrap">
+<div id="topbar">
+<h1>PRISM</h1>
+<select id="keySel"></select>
+<select id="soundSel">
+<option value="lush">Lush Pad</option>
+<option value="glass">Glass</option>
+<option value="warm">Warm Analog</option>
+</select>
+</div>
+<div id="grid"></div>
+<div id="hint">Tap a chord. Slide across for progressions. Right strip = filter.</div>
+</div>
+<div id="ribbon"><div id="ribbonLabel">FILTER</div><div id="ribbonFill"></div></div>
+</div>
+<script>
+// ---------- Audio ----------
+let ctx=null, master=null, filterNode=null;
+function ensureAudio(){
+  if(ctx) { if(ctx.state==='suspended') ctx.resume(); return; }
+  ctx=new (window.AudioContext||window.webkitAudioContext)();
+  master=ctx.createGain(); master.gain.value=0.8;
+  filterNode=ctx.createBiquadFilter(); filterNode.type='lowpass'; filterNode.frequency.value=4000; filterNode.Q.value=0.7;
+  const comp=ctx.createDynamicsCompressor();
+  // Reverb
+  const len=Math.floor(ctx.sampleRate*1.8), imp=ctx.createBuffer(2,len,ctx.sampleRate);
+  for(let ch=0;ch<2;ch++){const d=imp.getChannelData(ch);for(let i=0;i<len;i++)d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.5);}
+  const rev=ctx.createConvolver(); rev.buffer=imp;
+  const wet=ctx.createGain(); wet.gain.value=0.35;
+  filterNode.connect(master); master.connect(comp);
+  filterNode.connect(rev); rev.connect(wet); wet.connect(comp);
+  comp.connect(ctx.destination);
+}
+// ---------- Chord theory ----------
+// Semitone offsets for 11th chord voicings (6 notes each)
+const VOICINGS={
+  'maj11':[0,4,7,11,14,17],   // 1, 3, 5, 7, 9, 11
+  'min11':[0,3,7,10,14,17],   // 1, b3, 5, b7, 9, 11
+  'dom11':[0,4,7,10,14,17],   // 1, 3, 5, b7, 9, 11
+  'm9':[0,3,7,10,14],          // 1, b3, 5, b7, 9 (for variety)
+};
+const VOICING_LABELS={'maj11':'maj11','min11':'m11','dom11':'11','m9':'m9'};
+const KEYS=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const KEY_OFFSET={C:0,'C#':1,D:2,'D#':3,E:4,F:5,'F#':6,G:7,'G#':8,A:9,'A#':10,B:11};
+// Grid: 8 roots (scale degrees in major) x 4 voicings
+const DEGREE_OFFSETS=[0,2,4,5,7,9,11,12]; // I II III IV V VI VII VIII
+const DEGREE_NAMES=['I','ii','iii','IV','V','vi','vii','I'];
+const ROW_VOICINGS=['maj11','min11','dom11','m9'];
+
+function chordFreqs(rootMidi, voicing){
+  return VOICINGS[voicing].map(semi=>{
+    const midi=rootMidi+semi;
+    return 440*Math.pow(2,(midi-69)/12);
+  });
+}
+// ---------- Pad synthesis ----------
+let activeVoices=[];
+function playChord(freqs){
+  ensureAudio();
+  stopChord(0.15);
+  const t=ctx.currentTime, sound=document.getElementById('soundSel').value;
+  freqs.forEach(f=>{
+    // Two detuned layers per note for lushness
+    [-4,4].forEach(cents=>{
+      const o=ctx.createOscillator();
+      o.type = sound==='glass' ? 'sine' : 'sawtooth';
+      o.frequency.value=f; o.detune.value=cents+(Math.random()*6-3);
+      const fl=ctx.createBiquadFilter(); fl.type='lowpass';
+      fl.frequency.value = sound==='warm' ? 1200 : 2500;
+      const g=ctx.createGain();
+      g.gain.setValueAtTime(0,t);
+      g.gain.linearRampToValueAtTime(0.12,t+0.4); // slow attack
+      g.gain.setValueAtTime(0.12,t+1.5);
+      o.connect(fl); fl.connect(g); g.connect(filterNode);
+      o.start(t); o.stop(t+3);
+      activeVoices.push({o,g});
+    });
+  });
+}
+function stopChord(release){
+  if(!ctx) return; const t=ctx.currentTime;
+  activeVoices.forEach(v=>{
+    try{
+      v.g.gain.cancelScheduledValues(t);
+      v.g.gain.setValueAtTime(v.g.gain.value,t);
+      v.g.gain.linearRampToValueAtTime(0.001,t+release);
+      v.o.stop(t+release+0.1);
+    }catch(e){}
+  });
+  activeVoices=[];
+}
+// ---------- Grid ----------
+const grid=document.getElementById('grid');
+const keySel=document.getElementById('keySel');
+KEYS.forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k+' major';keySel.appendChild(o);});
+keySel.value='C';
+
+function buildGrid(){
+  grid.innerHTML='';
+  grid.style.gridTemplateColumns='repeat(8,1fr)';
+  grid.style.gridTemplateRows='repeat(4,1fr)';
+  const keyOffset=KEY_OFFSET[keySel.value];
+  for(let r=0;r<4;r++){
+    for(let c=0;c<8;c++){
+      const cell=document.createElement('div');
+      cell.className='cell';
+      const rootMidi=48+keyOffset+DEGREE_OFFSETS[c]; // C3 base
+      const voicing=ROW_VOICINGS[r];
+      const rootName=KEYS[(keyOffset+DEGREE_OFFSETS[c])%12];
+      cell.innerHTML='<div class="cn">'+rootName+'</div><div class="ct">'+VOICING_LABELS[voicing]+'</div>';
+      cell.dataset.root=rootMidi; cell.dataset.voicing=voicing;
+      const trigger=()=>{
+        document.querySelectorAll('.cell.active').forEach(x=>x.classList.remove('active'));
+        cell.classList.add('active');
+        playChord(chordFreqs(rootMidi,voicing));
+      };
+      cell.addEventListener('pointerdown',e=>{e.preventDefault();trigger();});
+      cell.addEventListener('pointerenter',e=>{if(e.buttons||e.pressure>0)trigger();});
+      grid.appendChild(cell);
+    }
+  }
+}
+keySel.onchange=buildGrid;
+buildGrid();
+// Clear active on pointerup anywhere
+document.addEventListener('pointerup',()=>{
+  setTimeout(()=>document.querySelectorAll('.cell.active').forEach(x=>x.classList.remove('active')),300);
+});
+// ---------- Filter ribbon ----------
+const ribbon=document.getElementById('ribbon'), ribbonFill=document.getElementById('ribbonFill');
+function setFilter(y){
+  ensureAudio();
+  const rect=ribbon.getBoundingClientRect();
+  const norm=Math.max(0,Math.min(1,1-(y-rect.top)/rect.height));
+  // Log scale: 200Hz to 9000Hz
+  const freq=200*Math.pow(9000/200,norm);
+  filterNode.frequency.setTargetAtTime(freq,ctx.currentTime,0.03);
+  ribbonFill.style.height=(norm*100)+'%';
+}
+ribbon.addEventListener('pointerdown',e=>{e.preventDefault();setFilter(e.clientY);
+  const mv=ev=>setFilter(ev.clientY);
+  const up=()=>{ribbon.removeEventListener('pointermove',mv);ribbon.removeEventListener('pointerup',up);};
+  ribbon.addEventListener('pointermove',mv); ribbon.addEventListener('pointerup',up);
+});
+// Init filter at 70%
+setTimeout(()=>{const r=ribbon.getBoundingClientRect();setFilter(r.top+r.height*0.3);},500);
+</script>
+</body>
+</html>
